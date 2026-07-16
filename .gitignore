@@ -1,8 +1,11 @@
-*.pyc
-__pycache__/
+wallet*.json
+pk.txt
+*.key
+wallets/
 .env
 tokens/
 logs/
 *.log
-wallet*.json
+*.pyc
+__pycache__/
 .DS_Store

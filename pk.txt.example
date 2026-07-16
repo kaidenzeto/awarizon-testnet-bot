@@ -1,0 +1,7 @@
+# Awarizon wallets — one private key per line
+# Lines starting with # are ignored
+# With or without 0x prefix both work
+#
+# Example:
+# 0xabc123...your_private_key_here
+# def456...another_key_without_0x

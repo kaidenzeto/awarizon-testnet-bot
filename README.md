@@ -47,13 +47,52 @@ python3 awarizon_bot.py --action auto --wallet $WALLET_PATH \
 
 ## Multi-Wallet Batch
 
-Process all wallets in a directory:
+### Option 1: `pk.txt` (recommended)
+
+Create a folder and put all private keys in one file:
+
+```
+wallets/
+└── pk.txt
+```
+
+```txt
+# wallets/pk.txt — one private key per line
+0xabc123...your_private_key_1
+0xdef456...your_private_key_2
+# comments and blank lines are ignored
+```
 
 ```bash
 python3 awarizon_bot.py --action auto --wallets-dir ./wallets/
 ```
 
-Each wallet file should be a JSON with a `privateKey` field.
+### Option 2: Individual files
+
+```
+wallets/
+├── wallet1.json   # {"privateKey": "0x..."}
+├── wallet2.txt    # plain private key
+└── wallet3.key
+```
+
+```bash
+python3 awarizon_bot.py --action auto --wallets-dir ./wallets/
+```
+
+### Option 3: Single wallet file
+
+```bash
+# Plain text private key
+python3 awarizon_bot.py --action auto --wallet ./pk.txt
+
+# JSON wallet
+python3 awarizon_bot.py --action auto --wallet ./wallet.json
+
+# Or via env
+export AWARIZON_WALLET=./pk.txt
+python3 awarizon_bot.py --action auto
+```
 
 ## CLI Options
 

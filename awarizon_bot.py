@@ -51,26 +51,90 @@ DEFAULT_SOCIALS = {
 
 # ─── Wallet helpers ──────────────────────────────────────────────────
 def load_wallet(path: str) -> tuple[str, str]:
-    """Load EVM private key from JSON wallet file. Returns (address, pk)."""
+    """Load EVM private key from a file.
+
+    Supported formats:
+      - JSON with {"privateKey": "0x...", ...}  (.json)
+      - Plain text: one hex key per line         (.txt / .key)
+      - First line is always used (single-wallet mode)
+    Returns (checksummed_address, 0x-prefixed_private_key).
+    """
     with open(path) as f:
-        data = json.load(f)
-    pk = data.get("privateKey") or data.get("private_key") or data.get("key")
+        raw = f.read().strip()
+
+    pk: str | None = None
+
+    # JSON format
+    if path.endswith(".json"):
+        data = json.loads(raw)
+        pk = data.get("privateKey") or data.get("private_key") or data.get("key")
+        if not pk:
+            raise ValueError(f"No privateKey field found in {path}")
+    else:
+        # Plain text: grab first non-empty, non-comment line
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            pk = line
+            break
+
     if not pk:
-        raise ValueError(f"No privateKey found in {path}")
+        raise ValueError(f"No private key found in {path}")
     if not pk.startswith("0x"):
         pk = "0x" + pk
+
     acct = Account.from_key(pk)
     return acct.address, pk
 
 
-def discover_wallets(wallets_dir: Optional[str], single: str) -> list[str]:
-    """Return list of wallet JSON paths to process."""
-    if wallets_dir:
-        paths = sorted(glob(os.path.join(os.path.expanduser(wallets_dir), "*.json")))
-        if not paths:
-            raise FileNotFoundError(f"No *.json wallets in {wallets_dir}")
-        return paths
-    return [os.path.expanduser(single)]
+def load_wallets_from_dir(dir_path: str) -> list[tuple[str, str]]:
+    """Load all wallets from a directory.
+
+    Supports:
+      - *.json files  (single JSON per file)
+      - pk.txt         (one private key per line, multi-wallet)
+      - *.txt / *.key  (single key per file)
+    Returns list of (address, pk).
+    """
+    results: list[tuple[str, str]] = []
+    base = os.path.expanduser(dir_path)
+    if not os.path.isdir(base):
+        raise FileNotFoundError(f"Not a directory: {base}")
+
+    # 1. pk.txt — multi-key file
+    pk_file = os.path.join(base, "pk.txt")
+    if os.path.isfile(pk_file):
+        with open(pk_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                pk = line if line.startswith("0x") else "0x" + line
+                acct = Account.from_key(pk)
+                results.append((acct.address, pk))
+
+    # 2. *.json files
+    for path in sorted(glob(os.path.join(base, "*.json"))):
+        try:
+            results.append(load_wallet(path))
+        except Exception as e:
+            print(f"  ⚠️  Skip {os.path.basename(path)}: {e}")
+
+    # 3. Other *.txt / *.key (single-key files, skip pk.txt already loaded)
+    for ext in ("*.txt", "*.key"):
+        for path in sorted(glob(os.path.join(base, ext))):
+            if os.path.basename(path) == "pk.txt":
+                continue
+            try:
+                results.append(load_wallet(path))
+            except Exception as e:
+                print(f"  ⚠️  Skip {os.path.basename(path)}: {e}")
+
+    if not results:
+        raise FileNotFoundError(f"No wallets found in {dir_path}")
+    return results
+
 
 
 # ─── API Client ──────────────────────────────────────────────────────
@@ -496,40 +560,6 @@ class AwarizonClient:
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────
-def run_for_wallet(
-    wallet_path: str,
-    action: str,
-    referral: str,
-    platform: Optional[str],
-    username: Optional[str],
-    socials: dict[str, str],
-) -> dict:
-    print(f"\n{'─' * 60}")
-    print(f"👛 Wallet file: {wallet_path}")
-    addr, pk = load_wallet(wallet_path)
-    client = AwarizonClient(addr, pk, referral_code=referral)
-
-    if action == "status":
-        client.status()
-        return {"wallet": addr, "action": action, "ok": True}
-    if action == "activate":
-        node = client.activate_node()
-        return {"wallet": addr, "action": action, "ok": bool(node)}
-    if action == "checkin":
-        r = client.check_in()
-        return {"wallet": addr, "action": action, "ok": r is not None or True}
-    if action == "social":
-        if not platform or not username:
-            print("❌ Need --platform and --username")
-            return {"wallet": addr, "action": action, "ok": False}
-        r = client.connect_social(platform, username)
-        return {"wallet": addr, "action": action, "ok": bool(r)}
-    if action == "auto":
-        print("🚀 Auto-farm...")
-        return client.auto(socials=socials)
-
-    print(f"❌ Unknown action: {action}")
-    return {"wallet": addr, "action": action, "ok": False}
 
 
 def main() -> None:
@@ -542,10 +572,10 @@ def main() -> None:
     )
     parser.add_argument("--platform", help="Social platform (TWITTER, DISCORD, TELEGRAM)")
     parser.add_argument("--username", help="Social username")
-    parser.add_argument("--wallet", default=DEFAULT_WALLET, help="Single wallet JSON path")
+    parser.add_argument("--wallet", default=DEFAULT_WALLET, help="Single wallet file (JSON or plain txt)")
     parser.add_argument(
         "--wallets-dir",
-        help="Directory of wallet JSON files (batch mode)",
+        help="Directory of wallets: pk.txt (multi-key), *.json, *.txt, *.key",
     )
     parser.add_argument("--referral", default=DEFAULT_REFERRAL, help="Referral code")
     parser.add_argument(
@@ -576,28 +606,57 @@ def main() -> None:
     if args.discord:
         socials["DISCORD"] = args.discord
 
-    try:
-        wallet_paths = discover_wallets(args.wallets_dir, args.wallet)
-    except Exception as e:
-        print(f"❌ Wallet load error: {e}")
-        sys.exit(1)
+    # ── Load wallets ──────────────────────────────────────────────────
+    if args.wallets_dir:
+        # Batch mode: load from directory (pk.txt + json + txt + key)
+        try:
+            wallets = load_wallets_from_dir(args.wallets_dir)
+        except Exception as e:
+            print(f"❌ Wallet dir error: {e}")
+            sys.exit(1)
+    else:
+        # Single wallet mode
+        try:
+            addr, pk = load_wallet(os.path.expanduser(args.wallet))
+            wallets = [(addr, pk)]
+        except Exception as e:
+            print(f"❌ Wallet load error: {e}")
+            sys.exit(1)
 
     results = []
-    for i, path in enumerate(wallet_paths):
+    for i, (addr, pk) in enumerate(wallets):
+        print(f"\n{'─' * 60}")
+        print(f"👛 Wallet: {addr[:14]}... ({i + 1}/{len(wallets)})")
         try:
-            r = run_for_wallet(
-                path,
-                args.action,
-                args.referral,
-                args.platform,
-                args.username,
-                socials,
-            )
-            results.append(r)
+            client = AwarizonClient(addr, pk, referral_code=args.referral)
+
+            if args.action == "status":
+                client.status()
+                results.append({"wallet": addr, "action": args.action, "ok": True})
+            elif args.action == "activate":
+                node = client.activate_node()
+                results.append({"wallet": addr, "action": args.action, "ok": bool(node)})
+            elif args.action == "checkin":
+                r = client.check_in()
+                results.append({"wallet": addr, "action": args.action, "ok": True})
+            elif args.action == "social":
+                if not args.platform or not args.username:
+                    print("❌ Need --platform and --username")
+                    results.append({"wallet": addr, "action": args.action, "ok": False})
+                else:
+                    r = client.connect_social(args.platform, args.username)
+                    results.append({"wallet": addr, "action": args.action, "ok": bool(r)})
+            elif args.action == "auto":
+                print("🚀 Auto-farm...")
+                r = client.auto(socials=socials)
+                results.append(r)
+            else:
+                print(f"❌ Unknown action: {args.action}")
+                results.append({"wallet": addr, "action": args.action, "ok": False})
         except Exception as e:
-            print(f"❌ Failed {path}: {e}")
-            results.append({"wallet": path, "error": str(e), "ok": False})
-        if i < len(wallet_paths) - 1:
+            print(f"❌ Failed: {e}")
+            results.append({"wallet": addr, "error": str(e), "ok": False})
+        if i < len(wallets) - 1:
             time.sleep(args.delay)
 
     if len(results) > 1:
