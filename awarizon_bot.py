@@ -12,7 +12,7 @@ Usage:
   python3 awarizon_bot.py --action status
   python3 awarizon_bot.py --action activate
   python3 awarizon_bot.py --action checkin
-  python3 awarizon_bot.py --action social --platform TWITTER --username kaiden79
+  python3 awarizon_bot.py --action social --platform TWITTER --username yourhandle
   python3 awarizon_bot.py --action auto
   python3 awarizon_bot.py --action auto --wallets-dir ~/.evm-wallets
   python3 awarizon_bot.py --action checkin --wallets-dir ~/.evm-wallets
@@ -35,7 +35,7 @@ from eth_account.messages import encode_defunct
 
 # ─── Config ──────────────────────────────────────────────────────────
 API_BASE = "https://api.awarizon.com/api/v1"
-DEFAULT_WALLET = os.path.expanduser("~/.dac-bot/wallet.json")
+DEFAULT_WALLET = os.environ.get("AWARIZON_WALLET", "wallet.json")
 TOKEN_DIR = os.path.expanduser("~/.awarizon/tokens")
 DEFAULT_REFERRAL = os.environ.get("AWARIZON_REFERRAL", "")
 
@@ -43,9 +43,9 @@ os.makedirs(TOKEN_DIR, exist_ok=True)
 
 # Social defaults (optional, used by auto if not already connected)
 DEFAULT_SOCIALS = {
-    # "TWITTER": "kaiden79",
-    # "TELEGRAM": "zetonesia",
-    # "DISCORD": ".zetosan",
+    # "TWITTER": "yourhandle",
+    # "TELEGRAM": "yourname",
+    # "DISCORD": "yourname",
 }
 
 
