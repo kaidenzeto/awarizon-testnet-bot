@@ -1,0 +1,8 @@
+*.pyc
+__pycache__/
+.env
+tokens/
+logs/
+*.log
+wallet*.json
+.DS_Store
