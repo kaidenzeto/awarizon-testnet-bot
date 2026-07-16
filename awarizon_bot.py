@@ -106,13 +106,16 @@ def load_wallets_from_dir(dir_path: str) -> list[tuple[str, str]]:
     pk_file = os.path.join(base, "pk.txt")
     if os.path.isfile(pk_file):
         with open(pk_file) as f:
-            for line in f:
+            for lineno, line in enumerate(f, 1):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
                 pk = line if line.startswith("0x") else "0x" + line
-                acct = Account.from_key(pk)
-                results.append((acct.address, pk))
+                try:
+                    acct = Account.from_key(pk)
+                    results.append((acct.address, pk))
+                except Exception as e:
+                    print(f"  ⚠️  Skip pk.txt line {lineno}: {e}")
 
     # 2. *.json files
     for path in sorted(glob(os.path.join(base, "*.json"))):
@@ -534,7 +537,7 @@ class AwarizonClient:
                     return summary
 
             node = self.activate_node()
-            summary["activated"] = bool(node and node.get("status") == "ACTIVE" or node)
+            summary["activated"] = bool(node and node.get("status") == "ACTIVE")
             time.sleep(1)
 
             if socials:
