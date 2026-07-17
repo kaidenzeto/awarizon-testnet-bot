@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Awarizon daily check-in cron wrapper
-# Runs at 15:00 WIB
+# Secrets are loaded from .env in the same directory
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,6 +12,7 @@ LOG="$LOG_DIR/checkin_$(date +%Y%m%d).log"
 
 {
   echo "=== Awarizon check-in $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+  cd "$SCRIPT_DIR"
   "$PYTHON" "$BOT" --action auto "$@" 2>&1
   echo "=== done ==="
 } | tee -a "$LOG"

@@ -4,9 +4,9 @@
 *.log
 logs/
 notify.py
-pk.txt
 *.pyc
 __pycache__/
 tokens/
 wallet*.json
 wallets/
+pk.txt

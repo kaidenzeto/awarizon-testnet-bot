@@ -1,6 +1,6 @@
 # Awarizon Testnet Bot 🌐
 
-Automated farmer for [Awarizon Testnet](https://testnet.awarizon.com) — SIWE auth, node activation, daily check-in, social connect, multi-wallet batch farming.
+Automated farmer for [Awarizon Testnet](https://testnet.awarizon.com) — SIWE auth, node activation, daily check-in, social connect.
 
 ## Features
 
@@ -21,105 +21,81 @@ cd awarizon-testnet-bot
 pip install requests eth-account
 ```
 
-## Quick Start
+## Setup
 
 ```bash
-# Set your wallet path
-export WALLET_PATH=/path/to/wallet.json
-
-# 1. Check status
-python3 awarizon_bot.py --action status --wallet $WALLET_PATH
-
-# 2. Activate node (once)
-python3 awarizon_bot.py --action activate --wallet $WALLET_PATH
-
-# 3. Connect socials (+200 each, once)
-python3 awarizon_bot.py --action social --wallet $WALLET_PATH \
-  --platform TWITTER --username yourhandle
-
-# 4. Daily check-in (+20/day)
-python3 awarizon_bot.py --action checkin --wallet $WALLET_PATH
-
-# 5. Full auto (activate + check-in + optional socials)
-python3 awarizon_bot.py --action auto --wallet $WALLET_PATH \
-  --twitter yourhandle --telegram yourname --discord yourname#0000
+# Copy and fill your .env
+cp .env.example .env
 ```
 
-## Multi-Wallet Batch
+Edit `.env`:
+```env
+# Single wallet
+PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
 
-### Option 1: `pk.txt` (recommended)
+# Multi-wallet (comma-separated)
+PRIVATE_KEY=0xkey1,0xkey2,0xkey3
 
-Create a folder and put all private keys in one file:
-
+# Optional
+REFERRAL_CODE=YOUR_CODE
+TWITTER_USERNAME=yourhandle
+TELEGRAM_USERNAME=yourname
+DISCORD_USERNAME=yourname
 ```
-wallets/
-└── pk.txt
-```
 
-```txt
-# wallets/pk.txt — one private key per line
-0xabc123...your_private_key_1
-0xdef456...your_private_key_2
-# comments and blank lines are ignored
-```
+## Usage
 
 ```bash
-python3 awarizon_bot.py --action auto --wallets-dir ./wallets/
-```
+# Check status
+python3 awarizon_bot.py --action status
 
-### Option 2: Individual files
+# Activate node (once)
+python3 awarizon_bot.py --action activate
 
-```
-wallets/
-├── wallet1.json   # {"privateKey": "0x..."}
-├── wallet2.txt    # plain private key
-└── wallet3.key
-```
+# Daily check-in
+python3 awarizon_bot.py --action checkin
 
-```bash
-python3 awarizon_bot.py --action auto --wallets-dir ./wallets/
-```
+# Connect social (+200 each, once)
+python3 awarizon_bot.py --action social --platform TWITTER --username yourhandle
 
-### Option 3: Single wallet file
-
-```bash
-# Plain text private key
-python3 awarizon_bot.py --action auto --wallet ./pk.txt
-
-# JSON wallet
-python3 awarizon_bot.py --action auto --wallet ./wallet.json
-
-# Or via env
-export AWARIZON_WALLET=./pk.txt
+# Full auto (activate + check-in + auto-connect socials from .env)
 python3 awarizon_bot.py --action auto
 ```
+
+## Multi-Wallet
+
+Comma-separated in `.env`:
+```env
+PRIVATE_KEY=0xabc...,0xdef...,0x123...
+```
+
+Or use `PRIVATE_KEY_2`, `PRIVATE_KEY_3`, etc:
+```env
+PRIVATE_KEY=0xabc...
+PRIVATE_KEY_2=0xdef...
+PRIVATE_KEY_3=0x123...
+```
+
+All wallets process automatically in batch with `--action auto`.
 
 ## CLI Options
 
 ```
 --action      status | activate | checkin | social | auto
---wallet      Path to single wallet JSON
---wallets-dir Directory of wallet JSONs (batch mode)
---referral    Referral code (optional)
 --platform    TWITTER | DISCORD | TELEGRAM
---username    Social username to connect
---twitter     Twitter handle (for auto connect)
---telegram    Telegram username (for auto connect)
---discord     Discord username (for auto connect)
+--username    Social username (for --action social)
+--referral    Referral code override (overrides .env)
+--twitter     Twitter handle override (overrides .env)
+--telegram    Telegram username override (overrides .env)
+--discord     Discord username override (overrides .env)
 --delay       Seconds between wallets in batch (default: 2)
 ```
 
 ## Cron (Daily Auto)
 
 ```bash
-# Add to crontab (15:00 WIB / 08:00 UTC daily)
-0 8 * * * python3 /path/to/awarizon_bot.py --action auto --wallet /path/to/wallet.json
-```
-
-Or use the included wrapper:
-```bash
-chmod +x checkin_cron.sh
-0 8 * * * /path/to/checkin_cron.sh
+# Add to crontab — runs daily at 08:00 UTC (15:00 WIB)
+0 8 * * * cd /path/to/awarizon-testnet-bot && python3 awarizon_bot.py --action auto
 ```
 
 ## API Flow
@@ -131,12 +107,13 @@ Daily:  POST /nodes/check-in → +20 pts (streak bonus)
 Social: POST /socials/connect {platform, username} → +200 pts each
 ```
 
-## JWT Auto-Refresh
+## Security
 
-- Token cached per wallet in `~/.awarizon/tokens/`
+- Private keys live in `.env` only (gitignored, chmod 600)
+- JWT tokens cached per wallet in `~/.awarizon/tokens/`
 - Auto re-auth on HTTP 401 or JWT expiry
 - Exponential backoff on HTTP 429 (max 3 retries)
-- Token files `chmod 600` for security
+- Token files `chmod 600`
 
 ## Requirements
 

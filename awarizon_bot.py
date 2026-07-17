@@ -5,17 +5,19 @@ Awarizon Testnet Auto-Farmer v2
 - Node activation (+500 pts)
 - Daily check-in (+20 pts + streak)
 - Social connect (+200 pts each)
-- Multi-wallet batch farming
+- Multi-wallet batch farming (comma-separated keys in .env)
 - Exponential backoff on 429
 
 Usage:
+  # 1. Copy and fill your .env
+  cp .env.example .env && nano .env
+
+  # 2. Run
   python3 awarizon_bot.py --action status
   python3 awarizon_bot.py --action activate
   python3 awarizon_bot.py --action checkin
-  python3 awarizon_bot.py --action social --platform TWITTER --username yourhandle
+  python3 awarizon_bot.py --action social --platform TWITTER --username handle
   python3 awarizon_bot.py --action auto
-  python3 awarizon_bot.py --action auto --wallets-dir ~/.evm-wallets
-  python3 awarizon_bot.py --action checkin --wallets-dir ~/.evm-wallets
 """
 
 from __future__ import annotations
@@ -26,118 +28,110 @@ import json
 import os
 import sys
 import time
-from glob import glob
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
+# ─── .env Loader ────────────────────────────────────────────────────
+def load_dotenv(path: str = ".env") -> None:
+    """Minimal .env loader — no external dep needed."""
+    env_path = Path(path)
+    if not env_path.is_absolute():
+        # Try in script dir first, then cwd
+        script_dir = Path(__file__).resolve().parent
+        for candidate in [script_dir / path, Path.cwd() / path]:
+            if candidate.is_file():
+                env_path = candidate
+                break
+        else:
+            return  # no .env found, rely on existing env vars
+
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:  # don't override existing env
+                os.environ[key] = value
+
+
+# Load .env on import
+load_dotenv()
+
+
 # ─── Config ──────────────────────────────────────────────────────────
 API_BASE = "https://api.awarizon.com/api/v1"
-DEFAULT_WALLET = os.environ.get("AWARIZON_WALLET", "wallet.json")
 TOKEN_DIR = os.path.expanduser("~/.awarizon/tokens")
-DEFAULT_REFERRAL = os.environ.get("AWARIZON_REFERRAL", "")
 
 os.makedirs(TOKEN_DIR, exist_ok=True)
 
-# Social defaults (optional, used by auto if not already connected)
-DEFAULT_SOCIALS = {
-    # "TWITTER": "yourhandle",
-    # "TELEGRAM": "yourname",
-    # "DISCORD": "yourname",
-}
-
 
 # ─── Wallet helpers ──────────────────────────────────────────────────
-def load_wallet(path: str) -> tuple[str, str]:
-    """Load EVM private key from a file.
-
-    Supported formats:
-      - JSON with {"privateKey": "0x...", ...}  (.json)
-      - Plain text: one hex key per line         (.txt / .key)
-      - First line is always used (single-wallet mode)
-    Returns (checksummed_address, 0x-prefixed_private_key).
-    """
-    with open(path) as f:
-        raw = f.read().strip()
-
-    pk: str | None = None
-
-    # JSON format
-    if path.endswith(".json"):
-        data = json.loads(raw)
-        pk = data.get("privateKey") or data.get("private_key") or data.get("key")
-        if not pk:
-            raise ValueError(f"No privateKey field found in {path}")
-    else:
-        # Plain text: grab first non-empty, non-comment line
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            pk = line
-            break
-
-    if not pk:
-        raise ValueError(f"No private key found in {path}")
-    if not pk.startswith("0x"):
-        pk = "0x" + pk
-
-    acct = Account.from_key(pk)
-    return acct.address, pk
-
-
-def load_wallets_from_dir(dir_path: str) -> list[tuple[str, str]]:
-    """Load all wallets from a directory.
+def load_wallets_from_env() -> list[tuple[str, str]]:
+    """Load wallets from PRIVATE_KEY env var.
 
     Supports:
-      - *.json files  (single JSON per file)
-      - pk.txt         (one private key per line, multi-wallet)
-      - *.txt / *.key  (single key per file)
-    Returns list of (address, pk).
+      - Single key:    PRIVATE_KEY=0xabc...
+      - Multiple keys: PRIVATE_KEY=0xabc...,0xdef...,0x123...
+      - Also reads:    PRIVATE_KEY_2=0x..., PRIVATE_KEY_3=0x...
+    Returns list of (checksummed_address, 0x-prefixed_private_key).
     """
     results: list[tuple[str, str]] = []
-    base = os.path.expanduser(dir_path)
-    if not os.path.isdir(base):
-        raise FileNotFoundError(f"Not a directory: {base}")
 
-    # 1. pk.txt — multi-key file
-    pk_file = os.path.join(base, "pk.txt")
-    if os.path.isfile(pk_file):
-        with open(pk_file) as f:
-            for lineno, line in enumerate(f, 1):
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                pk = line if line.startswith("0x") else "0x" + line
-                try:
+    # 1. PRIMARY_KEY or PRIVATE_KEY — comma-separated
+    pk_raw = os.environ.get("PRIVATE_KEY") or os.environ.get("PRIMARY_KEY") or ""
+    if pk_raw:
+        for chunk in pk_raw.split(","):
+            chunk = chunk.strip()
+            if not chunk or chunk.startswith("#"):
+                continue
+            pk = chunk if chunk.startswith("0x") else "0x" + chunk
+            try:
+                acct = Account.from_key(pk)
+                results.append((acct.address, pk))
+            except Exception as e:
+                print(f"  ⚠️  Skip PRIVATE_KEY entry: {e}")
+
+    # 2. PRIVATE_KEY_2, PRIVATE_KEY_3, ... etc
+    for i in range(2, 50):
+        pk_n = os.environ.get(f"PRIVATE_KEY_{i}", "").strip()
+        if not pk_n or pk_n.startswith("#"):
+            continue
+        pk = pk_n if pk_n.startswith("0x") else "0x" + pk_n
+        try:
+            acct = Account.from_key(pk)
+            results.append((acct.address, pk))
+        except Exception as e:
+            print(f"  ⚠️  Skip PRIVATE_KEY_{i}: {e}")
+
+    # 3. WALLET_FILE — fallback to JSON wallet file
+    if not results:
+        wallet_file = os.environ.get("WALLET_FILE", "").strip()
+        if wallet_file:
+            wallet_path = Path(wallet_file).expanduser()
+            if wallet_path.is_file():
+                with open(wallet_path) as f:
+                    data = json.load(f)
+                pk = data.get("privateKey") or data.get("private_key") or data.get("key")
+                if pk:
+                    if not pk.startswith("0x"):
+                        pk = "0x" + pk
                     acct = Account.from_key(pk)
                     results.append((acct.address, pk))
-                except Exception as e:
-                    print(f"  ⚠️  Skip pk.txt line {lineno}: {e}")
-
-    # 2. *.json files
-    for path in sorted(glob(os.path.join(base, "*.json"))):
-        try:
-            results.append(load_wallet(path))
-        except Exception as e:
-            print(f"  ⚠️  Skip {os.path.basename(path)}: {e}")
-
-    # 3. Other *.txt / *.key (single-key files, skip pk.txt already loaded)
-    for ext in ("*.txt", "*.key"):
-        for path in sorted(glob(os.path.join(base, ext))):
-            if os.path.basename(path) == "pk.txt":
-                continue
-            try:
-                results.append(load_wallet(path))
-            except Exception as e:
-                print(f"  ⚠️  Skip {os.path.basename(path)}: {e}")
 
     if not results:
-        raise FileNotFoundError(f"No wallets found in {dir_path}")
-    return results
+        raise ValueError(
+            "No wallets found! Set PRIVATE_KEY in .env or WALLET_FILE.\n"
+            "Run: cp .env.example .env && nano .env"
+        )
 
+    return results
 
 
 # ─── API Client ──────────────────────────────────────────────────────
@@ -145,7 +139,7 @@ class AwarizonClient:
     def __init__(self, wallet_address: str, private_key: str, referral_code: str = ""):
         self.wallet = wallet_address
         self.pk = private_key
-        self.referral_code = referral_code or DEFAULT_REFERRAL
+        self.referral_code = referral_code or os.environ.get("REFERRAL_CODE", "")
         self.session = requests.Session()
         self.session.headers.update({
             "Accept": "application/json, text/plain, */*",
@@ -176,10 +170,9 @@ class AwarizonClient:
         return None
 
     def _save_token(self, token: str, expires_in: Optional[int] = None) -> None:
-        # Prefer real JWT exp; fallback to 900s (HAR-confirmed TTL)
         if expires_in is None:
             expires_in = self._jwt_ttl(token) or 900
-        expires_at = time.time() + max(60, expires_in - 60)  # 60s buffer
+        expires_at = time.time() + max(60, expires_in - 60)
         path = self._token_path()
         with open(path, "w") as f:
             json.dump({"token": token, "expires_at": expires_at}, f)
@@ -188,10 +181,8 @@ class AwarizonClient:
 
     @staticmethod
     def _jwt_ttl(token: str) -> Optional[int]:
-        """Return seconds until JWT exp, or None if unparsable."""
         try:
             payload_b64 = token.split(".")[1]
-            # pad base64url
             payload_b64 += "=" * (-len(payload_b64) % 4)
             payload = json.loads(base64.urlsafe_b64decode(payload_b64))
             exp = int(payload.get("exp", 0))
@@ -211,7 +202,7 @@ class AwarizonClient:
             payload_b64 += "=" * (-len(payload_b64) % 4)
             payload = json.loads(base64.urlsafe_b64decode(payload_b64))
             exp = int(payload.get("exp", 0))
-            return exp <= int(time.time()) + 30  # 30s early
+            return exp <= int(time.time()) + 30
         except Exception:
             return True
 
@@ -362,7 +353,6 @@ class AwarizonClient:
         return None
 
     def check_in(self) -> Optional[dict]:
-        # Prefer pre-check via node state to avoid useless 429 noise
         node = self.get_node()
         if node is not None and node.get("canCheckIn") is False:
             print(
@@ -420,7 +410,7 @@ class AwarizonClient:
     def connect_missing_socials(self, socials: dict[str, str]) -> None:
         if not socials:
             return
-        current = {s.get("platform", "").upper() for s in self.get_socials() if s.get("status") == "VERIFIED"}
+        current = {s.get("platform", "").upper(): s for s in self.get_socials() if s.get("status") == "VERIFIED"}
         for platform, username in socials.items():
             if platform.upper() in current:
                 print(f"  ⏭️  {platform} already connected")
@@ -563,10 +553,25 @@ class AwarizonClient:
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────
+def load_socials_from_env() -> dict[str, str]:
+    """Load social usernames from .env."""
+    socials = {}
+    for platform, key in [
+        ("TWITTER", "TWITTER_USERNAME"),
+        ("TELEGRAM", "TELEGRAM_USERNAME"),
+        ("DISCORD", "DISCORD_USERNAME"),
+    ]:
+        val = os.environ.get(key, "").strip()
+        if val and not val.startswith("#"):
+            socials[platform] = val
+    return socials
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Awarizon Testnet Bot v2")
+    parser = argparse.ArgumentParser(
+        description="Awarizon Testnet Bot v2 — .env based config",
+        epilog="Secrets are loaded from .env file. Copy .env.example to .env and fill your values.",
+    )
     parser.add_argument(
         "--action",
         default="status",
@@ -575,33 +580,22 @@ def main() -> None:
     )
     parser.add_argument("--platform", help="Social platform (TWITTER, DISCORD, TELEGRAM)")
     parser.add_argument("--username", help="Social username")
-    parser.add_argument("--wallet", default=DEFAULT_WALLET, help="Single wallet file (JSON or plain txt)")
-    parser.add_argument(
-        "--wallets-dir",
-        help="Directory of wallets: pk.txt (multi-key), *.json, *.txt, *.key",
-    )
-    parser.add_argument("--referral", default=DEFAULT_REFERRAL, help="Referral code")
-    parser.add_argument(
-        "--twitter",
-        help="Twitter username for auto connect",
-    )
-    parser.add_argument(
-        "--telegram",
-        help="Telegram username for auto connect",
-    )
-    parser.add_argument(
-        "--discord",
-        help="Discord username for auto connect",
-    )
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=2.0,
-        help="Delay seconds between wallets in batch mode",
-    )
+    parser.add_argument("--twitter", help="Twitter handle override (overrides .env)")
+    parser.add_argument("--telegram", help="Telegram username override (overrides .env)")
+    parser.add_argument("--discord", help="Discord username override (overrides .env)")
+    parser.add_argument("--referral", help="Referral code override (overrides .env)")
+    parser.add_argument("--delay", type=float, default=2.0, help="Delay between wallets in batch")
     args = parser.parse_args()
 
-    socials = dict(DEFAULT_SOCIALS)
+    # ── Load wallets from .env ────────────────────────────────────────
+    try:
+        wallets = load_wallets_from_env()
+    except ValueError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+
+    # ── Load socials (CLI overrides .env) ─────────────────────────────
+    socials = load_socials_from_env()
     if args.twitter:
         socials["TWITTER"] = args.twitter
     if args.telegram:
@@ -609,29 +603,15 @@ def main() -> None:
     if args.discord:
         socials["DISCORD"] = args.discord
 
-    # ── Load wallets ──────────────────────────────────────────────────
-    if args.wallets_dir:
-        # Batch mode: load from directory (pk.txt + json + txt + key)
-        try:
-            wallets = load_wallets_from_dir(args.wallets_dir)
-        except Exception as e:
-            print(f"❌ Wallet dir error: {e}")
-            sys.exit(1)
-    else:
-        # Single wallet mode
-        try:
-            addr, pk = load_wallet(os.path.expanduser(args.wallet))
-            wallets = [(addr, pk)]
-        except Exception as e:
-            print(f"❌ Wallet load error: {e}")
-            sys.exit(1)
+    referral = args.referral or os.environ.get("REFERRAL_CODE", "")
 
+    # ── Process wallets ───────────────────────────────────────────────
     results = []
     for i, (addr, pk) in enumerate(wallets):
         print(f"\n{'─' * 60}")
         print(f"👛 Wallet: {addr[:14]}... ({i + 1}/{len(wallets)})")
         try:
-            client = AwarizonClient(addr, pk, referral_code=args.referral)
+            client = AwarizonClient(addr, pk, referral_code=referral)
 
             if args.action == "status":
                 client.status()
@@ -666,7 +646,7 @@ def main() -> None:
         print(f"\n{'=' * 60}")
         print(f"📦 Batch summary: {len(results)} wallets")
         ok = sum(1 for r in results if r.get("ok") or r.get("score") is not None)
-        print(f"   OK-ish: {ok}/{len(results)}")
+        print(f"   OK: {ok}/{len(results)}")
         for r in results:
             w = r.get("wallet", "?")
             if isinstance(w, str) and w.startswith("0x"):
